@@ -28,6 +28,9 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Supplier;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 import org.junit.jupiter.api.AfterEach;
@@ -1111,6 +1114,110 @@ public class MembershipProtocolTest extends BaseTest {
       assertNoSuspected(cmD);
     } finally {
       stopAll(cmA, cmB, cmC, cmD);
+    }
+  }
+
+  @Test
+  public void testStaticSeedMembersStillWork() {
+    // Regression: existing static seed members behavior unchanged when no provider is set
+    Transport a = createTransport();
+    Transport b = createTransport();
+    Transport c = createTransport();
+    List<String> addresses = Arrays.asList(a.address(), b.address(), c.address());
+
+    MembershipProtocolImpl cmA = createMembership(a, addresses);
+    MembershipProtocolImpl cmB = createMembership(b, addresses);
+    MembershipProtocolImpl cmC = createMembership(c, addresses);
+
+    try {
+      awaitSeconds(1);
+
+      assertTrusted(cmA, cmB.member(), cmC.member());
+      assertNoSuspected(cmA);
+      assertTrusted(cmB, cmA.member(), cmC.member());
+      assertNoSuspected(cmB);
+      assertTrusted(cmC, cmA.member(), cmB.member());
+      assertNoSuspected(cmC);
+    } finally {
+      stopAll(cmA, cmB, cmC);
+    }
+  }
+
+  @Test
+  public void testSeedMembersProvider() {
+    // Verify that seedMembersProvider is called during the SYNC cycle
+    Transport a = createTransport();
+    Transport b = createTransport();
+
+    AtomicInteger callCount = new AtomicInteger();
+    AtomicReference<List<String>> seedsRef =
+        new AtomicReference<>(Collections.singletonList(a.address()));
+
+    Supplier<List<String>> provider =
+        () -> {
+          callCount.incrementAndGet();
+          return seedsRef.get();
+        };
+
+    MembershipProtocolImpl cmA = createMembership(a, Collections.emptyList());
+
+    ClusterConfig configB =
+        testConfig(Collections.emptyList())
+            .membership(opts -> opts.seedMembersProvider(provider));
+    MembershipProtocolImpl cmB = createMembership(b, configB);
+
+    try {
+      awaitSeconds(3);
+
+      assertTrusted(cmA, cmB.member());
+      assertNoSuspected(cmA);
+      assertTrusted(cmB, cmA.member());
+      assertNoSuspected(cmB);
+
+      assertTrue(callCount.get() > 0, "Provider should have been called at least once");
+    } finally {
+      stopAll(cmA, cmB);
+    }
+  }
+
+  @Test
+  public void testSeedMembersProviderPartitionMerge() {
+    // Verify dynamic seeds enable partition merging:
+    // start 2 nodes with no seeds (separate partitions), then update provider to merge
+    Transport a = createTransport();
+    Transport b = createTransport();
+
+    AtomicReference<List<String>> seedsRefA = new AtomicReference<>(Collections.emptyList());
+
+    Supplier<List<String>> providerA = seedsRefA::get;
+
+    ClusterConfig configA =
+        testConfig(Collections.emptyList())
+            .membership(opts -> opts.seedMembersProvider(providerA));
+    MembershipProtocolImpl cmA = createMembership(a, configA);
+    MembershipProtocolImpl cmB = createMembership(b, Collections.emptyList());
+
+    try {
+      awaitSeconds(2);
+
+      // Confirm they don't see each other
+      assertSelfTrusted(cmA);
+      assertNoSuspected(cmA);
+      assertSelfTrusted(cmB);
+      assertNoSuspected(cmB);
+
+      // Now update A's provider to return B's address
+      seedsRefA.set(Collections.singletonList(b.address()));
+
+      // Wait for several SYNC cycles to trigger and merge
+      awaitSeconds(TEST_SYNC_INTERVAL * 6 / 1000 + 1);
+
+      assertTrusted(cmA, cmB.member());
+      assertNoSuspected(cmA);
+      assertTrusted(cmB, cmA.member());
+      assertNoSuspected(cmB);
+    } finally {
+      stopAll(cmA, cmB);
     }
   }
 

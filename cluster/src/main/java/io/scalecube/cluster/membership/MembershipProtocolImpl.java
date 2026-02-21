@@ -37,6 +37,7 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Supplier;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 import org.slf4j.Logger;
@@ -75,7 +76,7 @@ public final class MembershipProtocolImpl implements MembershipProtocol {
   private final Transport transport;
   private final MembershipConfig membershipConfig;
   private final FailureDetectorConfig failureDetectorConfig;
-  private final List<String> seedMembers;
+  private final Supplier<List<String>> seedMembersProvider;
   private final FailureDetector failureDetector;
   private final GossipProtocol gossipProtocol;
   private final MetadataStore metadataStore;
@@ -127,7 +128,7 @@ public final class MembershipProtocolImpl implements MembershipProtocol {
     this.failureDetectorConfig = Objects.requireNonNull(config).failureDetectorConfig();
 
     // Prepare seeds
-    seedMembers = cleanUpSeedMembers(membershipConfig.seedMembers());
+    seedMembersProvider = membershipConfig.seedMembersProvider();
 
     // Init membership table with local member record
     membershipTable.put(localMember.id(), new MembershipRecord(localMember, ALIVE, 0));
@@ -183,6 +184,10 @@ public final class MembershipProtocolImpl implements MembershipProtocol {
             .filter(addr -> checkAddressesNotEqual(addr, memberAddByHostName))
             .filter(addr -> checkAddressesNotEqual(addr, transportAddrByHostName))
             .collect(Collectors.toList());
+  }
+
+  private List<String> currentSeedMembers() {
+    return cleanUpSeedMembers(seedMembersProvider.get());
   }
 
   private static InetAddress getLocalIpAddress() {
@@ -250,17 +255,18 @@ public final class MembershipProtocolImpl implements MembershipProtocol {
 
   private void start0(MonoSink<Object> sink) {
     // In case no members at the moment just schedule periodic sync
-    if (seedMembers.isEmpty()) {
+    List<String> currentSeeds = currentSeedMembers();
+    if (currentSeeds.isEmpty()) {
       schedulePeriodicSync();
       sink.success();
       return;
     }
     // If seed addresses are specified in config - send initial sync to those nodes
-    LOGGER.info("[{}] Making initial Sync to all seed members: {}", localMember, seedMembers);
+    LOGGER.info("[{}] Making initial Sync to all seed members: {}", localMember, currentSeeds);
 
     //noinspection unchecked
     Mono<Message>[] syncs =
-        seedMembers.stream()
+        currentSeeds.stream()
             .map(
                 address ->
                     transport
@@ -475,7 +481,7 @@ public final class MembershipProtocolImpl implements MembershipProtocol {
 
   private Optional<String> selectSyncAddress() {
     List<String> addresses =
-        Stream.concat(seedMembers.stream(), otherMembers().stream().map(Member::address))
+        Stream.concat(currentSeedMembers().stream(), otherMembers().stream().map(Member::address))
             .collect(Collectors.collectingAndThen(Collectors.toSet(), ArrayList::new));
     Collections.shuffle(addresses);
     if (addresses.isEmpty()) {

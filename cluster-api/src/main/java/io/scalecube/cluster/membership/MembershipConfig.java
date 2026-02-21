@@ -1,10 +1,9 @@
 package io.scalecube.cluster.membership;
 
-import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.StringJoiner;
+import java.util.function.Supplier;
 import reactor.core.Exceptions;
 
 public final class MembershipConfig implements Cloneable {
@@ -23,7 +22,7 @@ public final class MembershipConfig implements Cloneable {
   public static final int DEFAULT_LOCAL_SUSPICION_MULT = 3;
   public static final int DEFAULT_LOCAL_SYNC_INTERVAL = 15_000;
 
-  private List<String> seedMembers = Collections.emptyList();
+  private Supplier<List<String>> seedMembersProvider = Collections::emptyList;
   private int syncInterval = DEFAULT_SYNC_INTERVAL;
   private int syncTimeout = DEFAULT_SYNC_TIMEOUT;
   private int suspicionMult = DEFAULT_SUSPICION_MULT;
@@ -66,30 +65,60 @@ public final class MembershipConfig implements Cloneable {
         .syncInterval(DEFAULT_LOCAL_SYNC_INTERVAL);
   }
 
-  public List<String> seedMembers() {
-    return seedMembers;
+  /**
+   * Returns the seed members provider. The provider is called on each SYNC cycle to obtain seed
+   * member addresses. By default, returns an empty collection.
+   *
+   * @return supplier of seed member addresses
+   */
+  public Supplier<List<String>> seedMembersProvider() {
+    return seedMembersProvider;
   }
 
   /**
-   * Setter for {@code seedMembers}.
+   * Setter for {@code seedMembersProvider}. The provider is called on each SYNC cycle to obtain
+   * fresh seed member addresses, enabling dynamic seed resolution and partition recovery.
+   *
+   * @param seedMembersProvider supplier of seed member addresses
+   * @return new {@code MembershipConfig} instance
+   */
+  public MembershipConfig seedMembersProvider(Supplier<List<String>> seedMembersProvider) {
+    MembershipConfig m = clone();
+    m.seedMembersProvider = seedMembersProvider;
+    return m;
+  }
+
+  /**
+   * Returns the current seed members by invoking the {@link #seedMembersProvider()}. Equivalent to
+   * calling {@code seedMembersProvider().get()}.
+   *
+   * @return seed members
+   */
+  public List<String> seedMembers() {
+    return seedMembersProvider.get();
+  }
+
+  /**
+   * Sets static {@code seedMembers}. Equivalent to calling {@code seedMembersProvider(() ->
+   * seedMembers)} with an immutable copy of the given list.
    *
    * @param seedMembers seed members
    * @return new {@code MembershipConfig} instance
    */
   public MembershipConfig seedMembers(String... seedMembers) {
-    return seedMembers(Arrays.asList(seedMembers));
+    return seedMembers(List.of(seedMembers));
   }
 
   /**
-   * Setter for {@code seedMembers}.
+   * Sets static {@code seedMembers}. Equivalent to calling {@code seedMembersProvider(() ->
+   * seedMembers)} with an immutable copy of the given list.
    *
    * @param seedMembers seed members
    * @return new {@code MembershipConfig} instance
    */
   public MembershipConfig seedMembers(List<String> seedMembers) {
-    MembershipConfig m = clone();
-    m.seedMembers = Collections.unmodifiableList(new ArrayList<>(seedMembers));
-    return m;
+    List<String> copy = List.copyOf(seedMembers);
+    return seedMembersProvider(() -> copy);
   }
 
   public int syncInterval() {
@@ -168,7 +197,7 @@ public final class MembershipConfig implements Cloneable {
   @Override
   public String toString() {
     return new StringJoiner(", ", MembershipConfig.class.getSimpleName() + "[", "]")
-        .add("seedMembers=" + seedMembers)
+        .add("seedMembersProvider=" + seedMembersProvider)
         .add("syncInterval=" + syncInterval)
         .add("syncTimeout=" + syncTimeout)
         .add("suspicionMult=" + suspicionMult)
